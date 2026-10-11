@@ -1,0 +1,294 @@
+USE ecommerce_db;
+
+-- Total number of orders?--
+Select COUNT(order_id)
+FROM orders;
+
+-- Total revenue (sum of payments)?--
+SELECT SUM(payment_value) FROM order_payments_dataset;
+
+-- Average order value?--
+SELECT SUM(payment_value) / COUNT(DISTINCT order_id) AS average_order_value
+FROM order_payments_dataset;
+
+-- Orders per month?--
+SELECT
+    DATE_FORMAT(order_purchase_timestamp, '%Y-%m') AS month,
+    COUNT(*) AS total_orders
+FROM orders
+GROUP BY month
+ORDER BY month;
+
+-- Revenue per month?-- 
+SELECT
+    DATE_FORMAT(o.order_purchase_timestamp, '%Y-%m') AS month,
+    SUM(p.payment_value) AS revenue
+FROM orders o
+JOIN order_payments_dataset p
+ON o.order_id = p.order_id
+GROUP BY month
+ORDER BY month;
+
+-- (JOINS + grouping)-- 
+-- Top 10 customers by total spending--
+SELECT
+    c.customer_unique_id,
+    COUNT(DISTINCT o.order_id) AS total_orders,
+    SUM(p.payment_value) AS total_spending
+FROM customers c
+JOIN orders o
+    ON c.customer_id = o.customer_id
+JOIN order_payments_dataset p
+    ON o.order_id = p.order_id
+GROUP BY c.customer_unique_id
+ORDER BY total_spending DESC
+LIMIT 10;
+
+-- Number of orders per customer--
+SELECT
+    c.customer_unique_id,
+    COUNT(DISTINCT o.order_id) AS total_orders
+FROM customers c
+LEFT JOIN orders o
+ON c.customer_id = o.customer_id
+GROUP BY c.customer_unique_id
+ORDER BY total_orders DESC;
+
+-- Which states have the most orders?--
+SELECT customer_state, COUNT(*)
+FROM customers
+GROUP BY customer_state
+ORDER BY COUNT(*) DESC;
+
+-- Revenue by state--
+SELECT a.customer_state, SUM(c.payment_value) AS Revenue
+FROM customers a
+JOIN orders b
+ON a.customer_id = b.customer_id
+JOIN order_payments_dataset c
+ON  b.order_id = c.order_id
+GROUP BY customer_state
+ORDER BY Revenue DESC;
+
+  -- Top 10 selling products--
+  SELECT product_id, COUNT(*) AS total_orders
+  FROM order_items
+  GROUP BY product_id
+  ORDER BY total_orders DESC
+  LIMIT 10;
+
+-- Most popular product categories--
+SELECT product_category_name, COUNT(*) AS total_orders
+FROM products p 
+JOIN order_items o
+ON p.product_id = o.product_id 
+GROUP BY p.product_category_name
+ORDER BY total_orders DESC; 
+
+-- Average payment per order--
+SELECT order_id,
+    SUM(payment_value) AS total_payment
+FROM order_payments_dataset
+GROUP BY order_id;  
+
+-- Customer behavior--
+-- Who are repeat customers vs one-time buyers?--
+SELECT
+    customer_unique_id,
+    total_orders,
+    CASE
+        WHEN total_orders >= 2 THEN 'Repeat Customer'
+        ELSE 'One Time Buyer'
+    END AS customer_type
+FROM (
+    SELECT
+        c.customer_unique_id,
+        COUNT(DISTINCT o.order_id) AS total_orders
+    FROM customers c
+    JOIN orders o
+        ON c.customer_id = o.customer_id
+    GROUP BY c.customer_unique_id
+) x;
+
+-- What % of customers are repeat buyers?--
+SELECT SUM(CASE WHEN n >= 2 THEN 1 ELSE 0 END) 
+    / COUNT(*) * 100 AS repeat_customer_percentage
+FROM (
+    SELECT customer_id,
+	COUNT(order_id) AS n
+    FROM orders
+    GROUP BY customer_id
+) p;
+
+-- Average revenue per repeat customer vs new customer--
+SELECT 
+    customer_type,
+    AVG(total_revenue) AS average_revenue_per_customer
+FROM (
+    SELECT c.customer_unique_id,
+        CASE 
+            WHEN COUNT(DISTINCT o.order_id) >= 2 THEN 'Repeat Customer'
+            ELSE 'One Time Buyer'
+        END AS customer_type,
+        SUM(p.payment_value) AS total_revenue
+    FROM customers c
+    JOIN orders o
+        ON c.customer_id = o.customer_id
+    JOIN order_payments_dataset p
+        ON o.order_id = p.order_id
+    GROUP BY c.customer_unique_id
+) x
+GROUP BY customer_type;
+
+-- ⏱️ Time analysis--
+-- Average delivery time (order → delivered)--
+SELECT AVG(DATEDIFF(order_delivered_customer_date, order_purchase_timestamp)) AS average_delivery_time
+FROM orders
+WHERE order_delivered_customer_date IS NOT NULL;
+
+-- Which states have the fastest/slowest delivery?--
+SELECT c.customer_state, AVG(DATEDIFF(o.order_delivered_customer_date, o.order_purchase_timestamp)) AS average_delivery_time
+FROM orders o
+JOIN customers c
+ON o.customer_id = c.customer_id
+WHERE o.order_delivered_customer_date IS NOT NULL
+GROUP BY c.customer_state
+ORDER BY average_delivery_time ASC
+LIMIT 1;
+
+SELECT c.customer_state, AVG(DATEDIFF(o.order_delivered_customer_date, o.order_purchase_timestamp)) AS average_delivery_time
+FROM orders o
+JOIN customers c
+ON o.customer_id = c.customer_id
+WHERE o.order_delivered_customer_date IS NOT NULL
+GROUP BY c.customer_state
+ORDER BY average_delivery_time DESC
+LIMIT 1;
+
+-- Monthly growth rate of orders--
+SELECT
+    month,
+    orders,
+    ROUND(
+        (orders - previous_month_orders) 
+        / previous_month_orders * 100,
+        2
+    ) AS monthly_growth_rate
+FROM (
+    SELECT 
+		DATE_FORMAT(order_purchase_timestamp, '%Y-%m') AS month,
+        COUNT(*) AS orders,
+        LAG(COUNT(*)) OVER (
+            ORDER BY DATE_FORMAT(order_purchase_timestamp, '%Y-%m')
+        ) AS previous_month_orders
+    FROM orders
+    GROUP BY DATE_FORMAT(order_purchase_timestamp, '%Y-%m')
+) x
+ORDER BY month;
+
+-- Product insights --
+-- Which products generate the most revenue but low order volume?--
+SELECT
+    product_id,
+    COUNT(DISTINCT order_id) AS order_volume,
+    SUM(price) AS revenue
+FROM order_items
+GROUP BY product_id
+HAVING COUNT(DISTINCT order_id) < (
+    SELECT AVG(order_volume)
+    FROM (
+        SELECT
+            product_id,
+            COUNT(DISTINCT order_id) AS order_volume
+        FROM order_items
+        GROUP BY product_id
+    ) x
+)
+ORDER BY revenue DESC
+LIMIT 10;
+
+-- Which categories have high sales but low revenue (cheap items)?--
+SELECT
+    p.product_category_name,
+    COUNT(DISTINCT o.order_id) AS total_orders,
+    SUM(o.price) AS revenue,
+    SUM(o.price) / COUNT(DISTINCT o.order_id) AS revenue_per_order
+FROM products p
+JOIN order_items o
+    ON p.product_id = o.product_id
+GROUP BY p.product_category_name
+HAVING COUNT(DISTINCT o.order_id) > (
+    SELECT AVG(total_orders)
+    FROM (
+        SELECT
+            p.product_category_name,
+            COUNT(DISTINCT o.order_id) AS total_orders
+        FROM products p
+        JOIN order_items o
+            ON p.product_id = o.product_id
+        GROUP BY p.product_category_name
+    ) x
+)
+AND
+SUM(o.price) / COUNT(DISTINCT o.order_id) < (
+    SELECT AVG(avg_revenue_per_order)
+    FROM (
+        SELECT
+            p.product_category_name,
+            SUM(o.price) / COUNT(DISTINCT o.order_id) AS avg_revenue_per_order
+        FROM products p
+        JOIN order_items o
+            ON p.product_id = o.product_id
+        GROUP BY p.product_category_name
+    ) y
+)
+ORDER BY revenue_per_order ASC;
+
+-- Geographic insights--
+-- Top cities by revenue--
+SELECT c.customer_city, SUM(p.payment_value) AS revenue 
+FROM customers c
+JOIN orders o
+ON c.customer_id = o.customer_id
+JOIN order_payments_dataset p
+ON o.order_id = p.order_id
+GROUP BY c.customer_city
+ORDER BY revenue DESC;
+
+-- Revenue per customer by state --
+SELECT c.customer_id, c.customer_state, SUM(p.payment_value) AS revenue
+FROM customers c
+JOIN orders o 
+ON c.customer_id = o.customer_id
+JOIN order_payments_dataset p 
+ON o.order_id = p.order_id
+GROUP BY c.customer_id, c.customer_state
+ORDER BY revenue DESC;
+
+-- Which states have high orders but low revenue?--
+SELECT
+    c.customer_state,
+    COUNT(DISTINCT o.order_id) AS total_orders,
+    SUM(p.payment_value) AS revenue,
+    SUM(p.payment_value) / COUNT(DISTINCT o.order_id) AS revenue_per_order
+FROM customers c
+JOIN orders o
+    ON c.customer_id = o.customer_id
+JOIN order_payments_dataset p
+    ON o.order_id = p.order_id
+GROUP BY c.customer_state
+ORDER BY revenue_per_order ASC;
+
+-- Payment behavior--
+-- Most common payment type--
+SELECT payment_type, COUNT(payment_type) AS Count 
+FROM order_payments_dataset
+GROUP BY payment_type
+ORDER BY Count DESC
+LIMIT 1;
+
+-- Average payment value by payment type--
+SELECT payment_type, AVG(payment_value) as avg_payment
+FROM order_payments_dataset
+GROUP BY payment_type
+ORDER BY avg_payment DESC;
